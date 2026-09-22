@@ -32,13 +32,21 @@ from pathlib import Path
 from tkinter import simpledialog, ttk
 from typing import Callable, List, Optional
 
-from notifier import SyncChoice
+from Class_Notifier import SyncChoice
 
 _MAX_LOG_LINES = 300
 
 # Журнал теперь не только в окне (которое каждый раз при перезапуске начинается с чистого листа),
-# но и в файле рядом с программой — жалоба "вывод в консоль не сохраняется из сессии в сессию".
-_LOG_FILE_PATH = Path(__file__).resolve().parent / "autosync.log"
+# но и в файле — жалоба "вывод в консоль не сохраняется из сессии в сессию". Этот файл лежит в
+# Class/ — сам журнал (Save/) находится уровнем выше, рядом с Class/ (см. переезд файлов
+# программы в Class/, а данных — в Save/, 22.09).
+_LOG_FILE_PATH = Path(__file__).resolve().parent.parent / "Save" / "autosync.log"
+
+# Коды физических клавиш C/V/X/A на Windows (event.keycode) — В ОТЛИЧИЕ от event.keysym они НЕ
+# зависят от текущей раскладки клавиатуры. На русской раскладке Ctrl+C/V/X даёт keysym вроде
+# 'Cyrillic_es'/'Cyrillic_em'/'Cyrillic_che', а не 'c'/'v'/'x' — из-за этого и не работали
+# копирование/вставка. keycode у физической клавиши остаётся тем же независимо от раскладки.
+_VK_A, _VK_C, _VK_V, _VK_X = 65, 67, 86, 88
 
 
 def _last_n_path_parts(path: Path, n: int = 3) -> str:
@@ -68,12 +76,82 @@ def remote_to_github_web_url(remote_url: str, branch: str) -> Optional[str]:
 
 @dataclass
 class PendingQuestion:
-    kind: str  # "yes_no" | "choice"
+    kind: str  # "yes_no" | "choice" | "repo_data_conflict"
     message: str = ""
     branch: str = ""
     diff_lines: List[str] = field(default_factory=list)
+    central: dict = field(default_factory=dict)   # для "repo_data_conflict" — данные из config.json
+    folder: dict = field(default_factory=dict)     # для "repo_data_conflict" — данные из .autosync_data
     event: threading.Event = field(default_factory=threading.Event)
     result: object = None
+
+
+def _finalize_toplevel(win: tk.Toplevel) -> None:
+    """Известная особенность Tk на Windows: свежесозданный Toplevel иногда повисает БЕЗ рамки
+    вообще (ни свернуть, ни развернуть, ни крестика) в углу экрана — оконный менеджер просто не
+    перерисовывает рамку, пока не получит сигнал об изменении геометрии. Вручную это лечится
+    попыткой изменить размер окна мышью — здесь делаем то же самое программно: пересчитываем
+    размер под содержимое и переустанавливаем геометрию (заодно и по центру — раньше окно
+    оставалось там, где Windows его изначально поставило, обычно в верхнем левом/правом углу),
+    что форсирует Windows нарисовать нормальную рамку сразу, без участия пользователя."""
+    win.update_idletasks()
+    width = win.winfo_reqwidth()
+    height = win.winfo_reqheight()
+
+    # Центрируем относительно главного окна программы (а не относительно всего экрана — так
+    # диалог появляется рядом с тем окном, из которого его открыли, даже на нескольких мониторах).
+    owner = win.master.winfo_toplevel()
+    x = owner.winfo_rootx() + (owner.winfo_width() - width) // 2
+    y = owner.winfo_rooty() + (owner.winfo_height() - height) // 2
+    # На случай, если главное окно свёрнуто/за пределами экрана — не даём диалогу уйти в минус.
+    x, y = max(0, x), max(0, y)
+
+    win.geometry(f"{width}x{height}+{x}+{y}")
+    win.lift()
+    win.focus_force()
+
+
+def _add_entry_context_menu(entry: tk.Entry) -> None:
+    """Два независимых исправления для полей ввода:
+
+    1. Не было меню по правой кнопке мыши ("Вырезать/Копировать/Вставить") — добавляем его,
+       как в остальных программах Windows.
+    2. Ctrl+C/Ctrl+V/Ctrl+X сами по себе НЕ РАБОТАЛИ на русской раскладке клавиатуры — встроенные
+       привязки tkinter для копирования/вставки завязаны на keysym (символ с учётом раскладки:
+       физическая клавиша C на русской раскладке даёт keysym 'Cyrillic_es', а не 'c'), поэтому
+       ни разу не срабатывали. Перехватываем по event.keycode (код физической клавиши — от
+       раскладки не зависит) и вызываем копирование/вставку/вырезание сами, независимо от того,
+       что там думает раскладка."""
+    menu = tk.Menu(entry, tearoff=0)
+    menu.add_command(label="Вырезать", command=lambda: entry.event_generate("<<Cut>>"))
+    menu.add_command(label="Копировать", command=lambda: entry.event_generate("<<Copy>>"))
+    menu.add_command(label="Вставить", command=lambda: entry.event_generate("<<Paste>>"))
+
+    def show_menu(event):
+        entry.focus_set()
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    entry.bind("<Button-3>", show_menu)
+
+    def on_key(event):
+        if not (event.state & 0x4):  # Ctrl не зажат — это не наш случай
+            return None
+        if event.keycode == _VK_C:
+            entry.event_generate("<<Copy>>")
+        elif event.keycode == _VK_V:
+            entry.event_generate("<<Paste>>")
+        elif event.keycode == _VK_X:
+            entry.event_generate("<<Cut>>")
+        elif event.keycode == _VK_A:
+            entry.select_range(0, "end")
+        else:
+            return None
+        return "break"
+
+    entry.bind("<Key>", on_key)
 
 
 def _open_in_explorer(path: Path) -> None:
@@ -190,9 +268,13 @@ class RepoRow(tk.Frame):
         entry.pack(padx=12, pady=(0, 12), fill="x")
         entry.select_range(0, "end")
         entry.focus_set()
+        _add_entry_context_menu(entry)
 
         def submit():
-            new_prefix = entry.get().strip()
+            # rstrip(",") — висячая запятая на конце (например "0.0,0.0,0.7,0,") иначе даёт тег
+            # с двойной запятой на конце (version.build_tag сама добавляет ",0"): работать он бы
+            # работал, но выглядит как опечатка, поэтому просто убираем лишнее.
+            new_prefix = entry.get().strip().rstrip(",")
             if not new_prefix:
                 return
             self.app.manual_version_change(self.watcher, new_prefix)
@@ -200,6 +282,7 @@ class RepoRow(tk.Frame):
 
         entry.bind("<Return>", lambda e: submit())
         tk.Button(win, text="Применить (коммит + пуш сразу)", command=submit).pack(pady=(0, 12))
+        _finalize_toplevel(win)
 
     def _interval_menu(self, event):
         menu = tk.Menu(self, tearoff=0)
@@ -287,6 +370,7 @@ class RepoRow(tk.Frame):
             entry = tk.Entry(win, width=40)
             entry.insert(0, current)
             entry.grid(row=i, column=1, padx=8, pady=4)
+            _add_entry_context_menu(entry)
             fields[key] = entry
 
         def submit():
@@ -309,6 +393,54 @@ class RepoRow(tk.Frame):
         tk.Button(win, text="Сохранить", command=submit).grid(
             row=len(rows), column=0, columnspan=2, pady=10
         )
+        tk.Button(
+            win, text="Удалить репозиторий...", fg="#a4000f",
+            command=lambda: self._confirm_delete_step1(win, w),
+        ).grid(row=len(rows) + 1, column=0, columnspan=2, pady=(0, 10))
+        _finalize_toplevel(win)
+
+    def _confirm_delete_step1(self, edit_win: tk.Toplevel, w) -> None:
+        """Удаление — с двойным подтверждением (случайный клик не должен убрать репозиторий из
+        слежения): первое окно объясняет, что именно произойдёт, второе — просто "точно?"."""
+        win = tk.Toplevel(self)
+        win.title(f"Удалить репозиторий — {w.name}")
+        tk.Label(
+            win,
+            text=f"Убрать «{w.name}» из слежения AutoSync?\n\n"
+                 "Сама папка и git-репозиторий на диске НЕ удаляются — пропадёт только запись\n"
+                 "в этой программе (строка в окне, config.json). Добавить обратно можно будет\n"
+                 "кнопкой «+», как и любой другой репозиторий.",
+            justify="left", wraplength=380,
+        ).pack(padx=16, pady=16)
+        buttons = tk.Frame(win)
+        buttons.pack(pady=(0, 12))
+        tk.Button(
+            buttons, text="Удалить", width=12, fg="#a4000f",
+            command=lambda: (win.destroy(), self._confirm_delete_step2(edit_win, w)),
+        ).pack(side="left", padx=8)
+        tk.Button(buttons, text="Отмена", width=12, command=win.destroy).pack(side="left", padx=8)
+        _finalize_toplevel(win)
+
+    def _confirm_delete_step2(self, edit_win: tk.Toplevel, w) -> None:
+        win = tk.Toplevel(self)
+        win.title("Подтвердите ещё раз")
+        tk.Label(
+            win, text=f"Точно удалить «{w.name}»?",
+            justify="left", fg="#a4000f", font=("TkDefaultFont", 10, "bold"),
+        ).pack(padx=16, pady=16)
+        buttons = tk.Frame(win)
+        buttons.pack(pady=(0, 12))
+
+        def confirm():
+            win.destroy()
+            edit_win.destroy()
+            self.app.on_delete_repo(w)
+
+        tk.Button(buttons, text="Да, удалить", width=14, fg="#a4000f", command=confirm).pack(
+            side="left", padx=8
+        )
+        tk.Button(buttons, text="Отмена", width=12, command=win.destroy).pack(side="left", padx=8)
+        _finalize_toplevel(win)
 
     # --- обновление вида -----------------------------------------------------------
 
@@ -350,12 +482,14 @@ class AutoSyncGUI:
     def __init__(self, watchers: list, on_add_repo: Callable[[dict], object],
                  on_edit_repo: Callable[..., None],
                  on_manual_version_change: Callable[..., None],
-                 on_toggle_run: Callable[..., None]):
+                 on_toggle_run: Callable[..., None],
+                 on_delete_repo: Callable[..., None]):
         self.watchers = watchers
         self._on_add_repo_cb = on_add_repo
         self._on_edit_repo_cb = on_edit_repo
         self._on_manual_version_change_cb = on_manual_version_change
         self._on_toggle_run_cb = on_toggle_run
+        self._on_delete_repo_cb = on_delete_repo
 
         self.root = tk.Tk()
         self.root.title("AutoSync")
@@ -398,7 +532,12 @@ class AutoSyncGUI:
         tk.Button(log_bar, text="Копировать весь лог", command=self._copy_log).pack(side="right")
         log_body = tk.Frame(log_container)
         log_body.pack(fill="both", expand=True)
-        self.log_text = tk.Text(log_body, state="disabled", wrap="word")
+        # state="disabled" в некоторых сборках Tk на Windows заодно ломает и обычное выделение
+        # мышью (работала только кнопка "Копировать весь лог") — вместо этого держим текст
+        # "normal" всегда, а от ручного редактирования защищаемся отдельно, блокируя клавиши
+        # (см. _block_log_editing ниже); выделение и Ctrl+C/Ctrl+A при этом работают как обычно.
+        self.log_text = tk.Text(log_body, wrap="word")
+        self.log_text.bind("<Key>", self._block_log_editing)
         log_scrollbar = ttk.Scrollbar(log_body, orient="vertical", command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=log_scrollbar.set)
         self.log_text.pack(side="left", fill="both", expand=True)
@@ -414,6 +553,33 @@ class AutoSyncGUI:
         self._load_log_history()
         self._tick()
 
+    _LOG_NAV_KEYSYMS = {
+        "Left", "Right", "Up", "Down", "Home", "End", "Prior", "Next",
+        "Shift_L", "Shift_R", "Control_L", "Control_R",
+    }
+
+    def _block_log_editing(self, event) -> Optional[str]:
+        """Лог должен оставаться читаемым мышью (выделение/Ctrl+C/Ctrl+A), но не редактируемым
+        с клавиатуры.
+
+        ВАЖНО про раскладку клавиатуры: раньше здесь проверялось event.keysym.lower() in
+        ("c", "a") — а keysym это СИМВОЛ, который получается с учётом текущей раскладки. На
+        русской раскладке физическая клавиша C выдаёт keysym вроде 'Cyrillic_es', а не 'c', и
+        проверка никогда не срабатывала — отсюда и "Ctrl+C не работает". event.keycode — это код
+        ФИЗИЧЕСКОЙ клавиши (в Windows он не зависит от раскладки), проверяем по нему. Также не
+        полагаемся на встроенную привязку Tk к Ctrl+C (она тоже завязана на keysym и тоже сломана
+        на нелатинской раскладке) — копирование/выделение всего вызываем сами явно."""
+        if event.keysym in self._LOG_NAV_KEYSYMS:
+            return None
+        ctrl_pressed = bool(event.state & 0x4)
+        if ctrl_pressed and event.keycode == _VK_C:
+            self.log_text.event_generate("<<Copy>>")
+            return "break"
+        if ctrl_pressed and event.keycode == _VK_A:
+            self.log_text.tag_add("sel", "1.0", "end")
+            return "break"
+        return "break"
+
     # --- вызывается из фоновых потоков (watcher.py) -----------------------------
 
     def log(self, repo_name: str, message: str) -> None:
@@ -424,6 +590,7 @@ class AutoSyncGUI:
     def _append_log_file(self, line: str) -> None:
         with self._log_lock:
             try:
+                _LOG_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
                 with open(_LOG_FILE_PATH, "a", encoding="utf-8") as f:
                     f.write(line + "\n")
             except OSError:
@@ -439,11 +606,9 @@ class AutoSyncGUI:
         if not lines:
             return
         tail = lines[-_MAX_LOG_LINES:]
-        self.log_text.configure(state="normal")
         self.log_text.insert("end", "\n".join(tail) + "\n")
         self.log_text.insert("end", "── новый запуск программы ──\n")
         self.log_text.see("end")
-        self.log_text.configure(state="disabled")
 
     def ask_yes_no(self, watcher, message: str) -> bool:
         pq = PendingQuestion(kind="yes_no", message=message)
@@ -455,6 +620,17 @@ class AutoSyncGUI:
 
     def ask_choice(self, watcher, branch: str, diff_lines: List[str]) -> "SyncChoice":
         pq = PendingQuestion(kind="choice", branch=branch, diff_lines=diff_lines)
+        watcher.pending_question = pq
+        self.root.after(0, self._show_pending_dialog, watcher, pq)
+        pq.event.wait()
+        watcher.pending_question = None
+        return pq.result  # type: ignore[return-value]
+
+    def ask_repo_data_conflict(self, watcher, central: dict, folder: dict) -> str:
+        """Данные репозитория разошлись между общим config.json и .autosync_data в папке
+        проекта (см. repo_data.py) — блокирующий вопрос, как ask_choice. Возвращает
+        "central" или "folder"."""
+        pq = PendingQuestion(kind="repo_data_conflict", central=central, folder=folder)
         watcher.pending_question = pq
         self.root.after(0, self._show_pending_dialog, watcher, pq)
         pq.event.wait()
@@ -499,6 +675,46 @@ class AutoSyncGUI:
 
             tk.Button(buttons, text="Да", width=10, command=lambda: answer(True)).pack(side="left", padx=8)
             tk.Button(buttons, text="Нет", width=10, command=lambda: answer(False)).pack(side="left", padx=8)
+        elif pq.kind == "repo_data_conflict":
+            def fmt(d: dict) -> str:
+                return (
+                    f"ветка: {d.get('branch', '—')}\n"
+                    f"интервал проверки: {d.get('check_interval_minutes', '—')} мин\n"
+                    f"последняя версия: {d.get('known_version') or '—'}"
+                )
+
+            tk.Label(
+                win,
+                text=(f"Данные репозитория {watcher.name!r} в общем config.json и в папке "
+                      f"проекта (.autosync_data) разошлись. Какие данные верны?"),
+                wraplength=440, justify="left",
+            ).pack(padx=16, pady=(16, 8))
+
+            info = tk.Frame(win)
+            info.pack(padx=16, pady=(0, 8))
+            tk.Label(info, text="Общий config.json:", font=("", 9, "bold"), justify="left").grid(
+                row=0, column=0, sticky="w", padx=(0, 24)
+            )
+            tk.Label(info, text="Папка проекта (.autosync_data):", font=("", 9, "bold"), justify="left").grid(
+                row=0, column=1, sticky="w"
+            )
+            tk.Label(info, text=fmt(pq.central), justify="left").grid(
+                row=1, column=0, sticky="nw", padx=(0, 24)
+            )
+            tk.Label(info, text=fmt(pq.folder), justify="left").grid(row=1, column=1, sticky="nw")
+
+            buttons = tk.Frame(win)
+            buttons.pack(pady=(4, 16))
+
+            def answer_repo_data(value: str):
+                pq.result = value
+                pq.event.set()
+                win.destroy()
+
+            tk.Button(buttons, text="Взять из config.json", width=20,
+                      command=lambda: answer_repo_data("central")).pack(side="left", padx=6)
+            tk.Button(buttons, text="Взять из папки проекта", width=22,
+                      command=lambda: answer_repo_data("folder")).pack(side="left", padx=6)
         else:
             tk.Label(win, text=f"Расхождение в ветке {pq.branch!r}:", justify="left").pack(
                 padx=16, pady=(16, 4), anchor="w"
@@ -523,19 +739,20 @@ class AutoSyncGUI:
             tk.Button(buttons, text="Mergetool", width=14,
                       command=lambda: answer(SyncChoice.OPEN_MERGETOOL)).pack(side="left", padx=6)
 
+        _finalize_toplevel(win)
+
     def _append_log(self, line: str) -> None:
-        self.log_text.configure(state="normal")
         self.log_text.insert("end", line + "\n")
         line_count = int(self.log_text.index("end-1c").split(".")[0])
         if line_count > _MAX_LOG_LINES:
             self.log_text.delete("1.0", f"{line_count - _MAX_LOG_LINES}.0")
         self.log_text.see("end")
-        self.log_text.configure(state="disabled")
 
     def _copy_log(self) -> None:
-        # Выделение и Ctrl+C в самом Text и так работают даже при state="disabled" (запрещено
-        # только редактирование), но явная кнопка — надёжнее и заметнее, чем полагаться на то,
-        # что это очевидно.
+        # Отдельная кнопка "скопировать весь лог целиком" — быстрее, чем выделять мышью весь
+        # текст. Выделение конкретного куска мышью + Ctrl+C теперь тоже работает (см.
+        # _block_log_editing выше — раньше state="disabled" на некоторых сборках Tk блокировало
+        # и это тоже, оставляя рабочей только эту кнопку).
         self.root.clipboard_clear()
         self.root.clipboard_append(self.log_text.get("1.0", "end-1c"))
 
@@ -590,6 +807,7 @@ class AutoSyncGUI:
             )
             entry = tk.Entry(win, width=40)
             entry.grid(row=i, column=1, padx=8, pady=4)
+            _add_entry_context_menu(entry)
             fields[key] = entry
         fields["interval"].insert(0, "1800")
 
@@ -616,6 +834,7 @@ class AutoSyncGUI:
             win.destroy()
 
         tk.Button(win, text="Добавить", command=submit).grid(row=len(rows), column=0, columnspan=2, pady=10)
+        _finalize_toplevel(win)
 
     def on_edit_repo(self, watcher, **changes) -> None:
         self._on_edit_repo_cb(watcher, **changes)
@@ -625,6 +844,21 @@ class AutoSyncGUI:
 
     def on_toggle_run(self, watcher, running: bool) -> None:
         self._on_toggle_run_cb(watcher, running)
+
+    def on_delete_repo(self, watcher) -> None:
+        self._on_delete_repo_cb(watcher)
+
+    def remove_row_for(self, watcher) -> None:
+        """Вызывается из фонового потока (watcher.py: delete_repo_runtime) после того, как
+        слежение снято — сама уборка виджета и списка watchers идёт в главном потоке."""
+        self.root.after(0, self._remove_row, watcher)
+
+    def _remove_row(self, watcher) -> None:
+        row = self._rows.pop(id(watcher), None)
+        if row is not None:
+            row.destroy()
+        if watcher in self.watchers:
+            self.watchers.remove(watcher)
 
     def _tick(self) -> None:
         pending_count = sum(1 for w in self.watchers if w.pending_question is not None)
