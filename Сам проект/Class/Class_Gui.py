@@ -26,6 +26,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import traceback
 import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,6 +42,10 @@ _MAX_LOG_LINES = 300
 # Class/ — сам журнал (Save/) находится уровнем выше, рядом с Class/ (см. переезд файлов
 # программы в Class/, а данных — в Save/, 22.09).
 _LOG_FILE_PATH = Path(__file__).resolve().parent.parent / "Save" / "autosync.log"
+
+# Сюда же (в тот же файл, куда AutoSync.pyw пишет ошибки старта) дописываем и ошибки, возникшие
+# ВНУТРИ Tkinter-колбэков уже во время работы окна — см. _handle_callback_exception ниже.
+_CRASH_LOG_FILE_PATH = Path(__file__).resolve().parent.parent / "Save" / "autosync_crash.log"
 
 # Коды физических клавиш C/V/X/A на Windows (event.keycode) — В ОТЛИЧИЕ от event.keysym они НЕ
 # зависят от текущей раскладки клавиатуры. На русской раскладке Ctrl+C/V/X даёт keysym вроде
@@ -245,7 +250,7 @@ class RepoRow(tk.Frame):
         menu.tk_popup(event.x_root, event.y_root)
 
     def _edit_version(self) -> None:
-        from version import split_prefix_and_push
+        from Class_Version import split_prefix_and_push
 
         base = self.watcher.known_version or self.watcher.current_tag
         if base and base != "тегов ещё нет":
@@ -446,7 +451,7 @@ class RepoRow(tk.Frame):
 
     def refresh(self) -> None:
         w = self.watcher
-        self.path_label.configure(text=_last_n_path_parts(w.full_watch_path, 3))
+        self.path_label.configure(text=w.name)
         self.git_label.configure(text=_last_n_path_parts(Path(w.name) / w.branch, 3))
 
         tag = w.current_tag
@@ -495,6 +500,12 @@ class AutoSyncGUI:
         self.root.title("AutoSync")
         self.root.geometry("900x520")
         self.default_bg = self.root.cget("bg")
+        # По умолчанию Tk гасит исключения из колбэков (кнопки, .after(), диалоги) сама — просто
+        # печатает в stderr, и такая ошибка НИКОГДА не долетает ни до верхнеуровневого try/except
+        # в AutoSync.pyw, ни до Save/autosync_crash.log (обнаружено 22.09 при расследовании
+        # "краша" без единой строки в логах). Перехватываем сами, чтобы такие ошибки тоже попадали
+        # в журнал и в crash-лог.
+        self.root.report_callback_exception = self._handle_callback_exception
 
         top_bar = tk.Frame(self.root)
         top_bar.pack(fill="x", padx=6, pady=(6, 0))
@@ -579,6 +590,24 @@ class AutoSyncGUI:
             self.log_text.tag_add("sel", "1.0", "end")
             return "break"
         return "break"
+
+    def _handle_callback_exception(self, exc_type, exc_value, exc_tb) -> None:
+        """Ставится в self.root.report_callback_exception (см. __init__). Вызывается самим Tk,
+        когда исключение вылетело внутри любого колбэка (нажатие кнопки, .after(), логика
+        диалога) уже во время работы mainloop() — то есть ПОСЛЕ старта окна, когда верхнеуровневый
+        try/except в AutoSync.pyw уже не смотрит за кодом. Без этого такая ошибка просто печаталась
+        бы в stderr (не виден в .pyw-запуске без консоли) и исчезала бесследно."""
+        error_text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        try:
+            _CRASH_LOG_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(_CRASH_LOG_FILE_PATH, "a", encoding="utf-8") as f:
+                f.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} "
+                        f"(ошибка внутри колбэка Tkinter, окно продолжает работать) ---\n")
+                f.write(error_text)
+        except OSError:
+            pass
+        self.log("AutoSync", f"ОШИБКА В КОЛБЭКЕ (полный текст дописан в Save/autosync_crash.log): "
+                              f"{exc_type.__name__}: {exc_value}")
 
     # --- вызывается из фоновых потоков (watcher.py) -----------------------------
 
@@ -816,7 +845,11 @@ class AutoSyncGUI:
             branch = fields["branch"].get().strip()
             if not (path and branch):
                 return
-            name = fields["name"].get().strip() or Path(path).name
+            # Если имя не задано вручную — по умолчанию берём последние 3 части пути (как при
+            # выборе папки в проводнике), а не только имя самой папки: так строка в таблице
+            # остаётся узнаваемой даже когда конечные папки у разных проектов называются одинаково
+            # (например "Сам проект").
+            name = fields["name"].get().strip() or _last_n_path_parts(Path(path), 3)
             watch_path = fields["watch_path"].get().strip()  # пусто — следим за всей папкой репозитория
             repo_cfg = {
                 "name": name,
