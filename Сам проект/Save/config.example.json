@@ -1,33 +1,17 @@
 {
-  "_комментарий": "Скопируйте в config.json рядом и заполните под свой ПК. path — это корень git-репозитория (там, где лежит .git), у Life_Operator/Power_struggle это папка 'Сам проект' внутри проекта, а не сам проект целиком.",
+  "_комментарий": "Пример формата. Программа теперь сама создаёт config.json при первом запуске, если его нет — этот файл можно использовать просто как образец. path — корень git-репозитория (там, где лежит .git).",
 
-  "dev_id": 7,
+  "dev_id": 1,
   "check_interval_minutes": 30,
+  "ignored_folders": [".godot", "__pycache__"],
 
   "repos": [
     {
-      "name": "Godot_Template",
-      "path": "C:\\Users\\Бог\\YandexDisk-volov7gleb\\Проекты\\IT\\Godot_Template",
-      "branch": "alpha/Mzs7",
-      "watch_paths": [
-        "Сам проект\\Godot_Template"
-      ]
-    },
-    {
-      "name": "Life_Operator",
-      "path": "C:\\Users\\Бог\\YandexDisk-volov7gleb\\Проекты\\IT\\Программы\\Life_Operator\\Сам проект",
-      "branch": "alpha/Mzs7",
-      "watch_paths": [
-        "Godot_Template_Life_Operator"
-      ]
-    },
-    {
-      "name": "Power_struggle",
-      "path": "C:\\Users\\Бог\\YandexDisk-volov7gleb\\Проекты\\IT\\Игры\\Power_struggle\\Сам проект",
-      "branch": "alpha/Mzs7",
-      "watch_paths": [
-        "Godot_Template_Power_struggle"
-      ]
+      "name": "ИмяВашегоПроекта",
+      "path": "C:\\Путь\\К\\Корню\\Вашего\\Git-Репозитория",
+      "branch": "main",
+      "watch_paths": [""],
+      "enabled": true
     }
   ]
 }

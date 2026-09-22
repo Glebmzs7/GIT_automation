@@ -877,6 +877,21 @@ def _run_self_update_check() -> None:
     self_update.check_and_apply(ask_yes_no, notify_and_exit, log_update_step)
 
 
+# Дефолтный config.json для СОВСЕМ первого запуска (config.json ещё нет — например, только что
+# склонировали репозиторий, а он намеренно не в git, свой для каждого компьютера). Раньше в этом
+# случае была просто ошибка запуска (FileNotFoundError) с трейсбеком — теперь вместо этого сами
+# создаём пустой конфиг (без сталкеров) и сразу открываем форму "Добавить репозиторий" поверх
+# пустого окна (см. main() ниже), чтобы можно было настроить первый сталкер прямо в интерфейсе,
+# без ручного редактирования JSON.
+_FIRST_RUN_DEFAULT_CONFIG = {
+    "_комментарий": "Создано автоматически при первом запуске (config.json не найден).",
+    "dev_id": 1,
+    "check_interval_minutes": 30,
+    "ignored_folders": [".godot", "__pycache__"],
+    "repos": [],
+}
+
+
 def main(config_path_: Optional[str] = None) -> None:
     global app, observer, cfg, config_path
     if config_path_ is None:
@@ -888,7 +903,13 @@ def main(config_path_: Optional[str] = None) -> None:
         # config.json и падала с FileNotFoundError.
         config_path_ = str(Path(__file__).resolve().parent.parent / "Save" / "config.json")
     config_path = config_path_
-    cfg = json.loads(Path(config_path).read_text(encoding="utf-8"))
+
+    is_first_run = not Path(config_path).exists()
+    if is_first_run:
+        cfg = dict(_FIRST_RUN_DEFAULT_CONFIG)
+        _save_config()
+    else:
+        cfg = json.loads(Path(config_path).read_text(encoding="utf-8"))
     dev_id = cfg["dev_id"]
     # config.json по-прежнему хранит интервал в минутах (не переписываем формат файла) — окно и
     # все интерактивные диалоги дальше работают в секундах, переводим только один раз здесь.
@@ -913,6 +934,12 @@ def main(config_path_: Optional[str] = None) -> None:
 
     # Слежение и проверки идут в фоне, окно — на главном потоке (обязательное требование tkinter).
     threading.Thread(target=_background_start, args=(watchers,), daemon=True).start()
+
+    if is_first_run:
+        # Небольшая задержка — чтобы главное окно успело отрисоваться ДО того, как поверх него
+        # появится диалог "Добавить репозиторий" (иначе на некоторых сборках Windows/tkinter
+        # диалог может открыться раньше самого окна и выглядеть "повисшим в воздухе").
+        app.root.after(300, app._open_add_dialog)
 
     app.run()  # блокирует до закрытия окна
 
