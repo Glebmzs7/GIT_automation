@@ -303,6 +303,12 @@ class RepoWatcher(FileSystemEventHandler):
             for repo_cfg in cfg.get("repos", []):
                 if repo_cfg["name"] == self.name:
                     repo_cfg["branch"] = self.branch
+                    # Раньше сохранялась только ветка — интервал оставался только в памяти и
+                    # .autosync_data, поэтому при следующем запуске центральная сторона снова
+                    # пересчитывалась с общим интервалом по умолчанию, и конфликт "данные
+                    # разошлись" возникал заново, хотя пользователь уже его разрешил (см. main()).
+                    if interval_min:
+                        repo_cfg["check_interval_minutes"] = interval_min
                     break
             _save_config()
             log(self.name, "Выбор пользователя: взять данные из папки проекта (.autosync_data)")
@@ -652,6 +658,10 @@ def _unregister_watch(watcher: RepoWatcher) -> None:
 def add_repo_runtime(repo_cfg: dict, interval_seconds: int):
     """Вызывается из окна (кнопка '+'): создать репозиторий, сохранить в config.json, начать
     следить. Версию не спрашиваем — она сама подтянется с git при первой проверке."""
+    # Сохраняем интервал сразу в самой записи репозитория (а не только передаём в конструктор) —
+    # иначе при следующем запуске программы он потеряется и подставится общий по умолчанию (см.
+    # main() и edit_repo_runtime — та же история с "забытым" интервалом).
+    repo_cfg["check_interval_minutes"] = round(interval_seconds / 60)
     cfg.setdefault("repos", []).append(repo_cfg)
     _save_config()
 
@@ -698,6 +708,11 @@ def edit_repo_runtime(watcher: RepoWatcher, name: Optional[str] = None, path: Op
         if interval_seconds:
             watcher.check_interval_seconds = interval_seconds
             watcher.next_check_at = time.time() + interval_seconds
+            # Раньше сохранялось только в памяти — при следующем запуске программы терялось,
+            # и центральные данные пересчитывались уже с общим интервалом по умолчанию (см.
+            # main()). Теперь сохраняем и в config.json конкретного репозитория, чтобы своя
+            # частота проверки переживала перезапуск.
+            repo_cfg["check_interval_minutes"] = round(interval_seconds / 60)
 
         if needs_rewatch:
             _register_watch(watcher)
@@ -900,7 +915,20 @@ def main(config_path_: Optional[str] = None) -> None:
     _run_self_update_check()
 
     observer = Observer()
-    watchers = [RepoWatcher(repo_cfg, dev_id, default_interval) for repo_cfg in cfg["repos"]]
+    # Интервал — свой у каждого репозитория, если он когда-то был задан (правый клик на обратном
+    # отсчёте, или принят из .autosync_data при разрешении repo_data-конфликта) и сохранён в
+    # config.json; иначе — общий по умолчанию. Раньше здесь ВСЕГДА брался только общий default_
+    # interval, из-за чего центральные данные при каждом старте пересчитывались заново с
+    # интервалом по умолчанию и расходились с тем, что реально осело в .autosync_data — конфликт
+    # "данные разошлись" возникал заново при каждом перезапуске, даже если пользователь уже
+    # разрешил его в прошлый раз (обнаружено 23.09 на Test_GIT_Avto).
+    watchers = [
+        RepoWatcher(
+            repo_cfg, dev_id,
+            repo_cfg.get("check_interval_minutes", cfg["check_interval_minutes"]) * 60,
+        )
+        for repo_cfg in cfg["repos"]
+    ]
 
     app = AutoSyncGUI(
         watchers,

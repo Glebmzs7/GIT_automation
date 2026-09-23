@@ -329,8 +329,12 @@ class RepoRow(tk.Frame):
             initialvalue=self.watcher.check_interval_seconds, minvalue=1, parent=self,
         )
         if seconds:
-            self.watcher.check_interval_seconds = seconds
-            self.watcher.next_check_at = time.time() + self.watcher.check_interval_seconds
+            # Раньше правилось только в памяти (не сохранялось в config.json) — при следующем
+            # запуске программы значение терялось и подставлялся общий интервал по умолчанию, из-
+            # за чего мог заново возникать конфликт "данные разошлись" (см. edit_repo_runtime и
+            # main() в watcher.py). Теперь идёт через on_edit_repo — так же сохраняется, как и
+            # остальные изменения репозитория.
+            self.app.on_edit_repo(self.watcher, interval_seconds=seconds)
 
     def _on_run_button_click(self) -> None:
         w = self.watcher
