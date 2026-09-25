@@ -1,20 +1,18 @@
-# AutoSync — черновик демона автоматической git-синхронизации
+# AutoSync — демон автоматической git-синхронизации
 
-Статус: **черновик для ревью**, ни в один реальный репозиторий ещё не положен (только после
-"Применяй" в чате).
+Статус: реализовано и используется — код живёт в собственном репозитории `GIT_Automation`
+(https://github.com/Glebmzs7/GIT_automation), не внутри `Godot_Template`. Этот файл описывает
+раннюю черновую версию структуры; актуальные модули — в `Class/`, см. список ниже и
+`План проекта/Обзор проекта.md`.
 
-Куда планируется положить (предложение пользователя, чтобы разошлось по проектам через subtree,
-как и Class_*.gd): `Godot_Template/Tools/AutoSync/`.
+## Что реализовано (актуальные модули — `Class/`)
 
-## Что реализовано в этом черновике
-
-- `version.py` — формат версии `<статус><Stable>,<StablePatch>.<Beta>,<BetaPush>[.<ProjectSync>,<Push>].<DevId>,<TaskLabel>,<PushCount>`
-  и статусы `L`/`G`/`OG`/`C`/`M`. Есть встроенная самопроверка (`python version.py`).
-- `git_ops.py` — тонкая обёртка над git (fetch, ahead/behind, тег, mergetool). Конфликты решает
+- `Class_Version.py` — формат версии `<статус><Stable>,<StablePatch>.<Beta>,<BetaPush>[.<ProjectSync>,<Push>].<DevId>,<TaskLabel>,<PushCount>`
+  и статусы `L`/`G`/`OG`/`C`/`M`. Есть встроенная самопроверка (`python Class_Version.py`).
+- `Class_GitOps.py` — тонкая обёртка над git (fetch, ahead/behind, тег, mergetool). Конфликты решает
   сам git (`git mergetool`), своей логики слияния нет.
-- `notifier.py` — уведомление + вопрос пользователю при расхождении (черновик через консоль,
-  для реального использования нужно окно, например на tkinter).
-- `watcher.py` — сам демон: следит за путями из `config.json`, на изменение — сверяет git/local,
+- `Class_Notifier.py` — уведомление + вопрос пользователю при расхождении.
+- `Class_Watcher.py` — сам демон: следит за путями из `config.json`, на изменение — сверяет git/local,
   либо коммитит и пушит сразу (без debounce), либо спрашивает пользователя при расхождении.
   Плюс отдельный поток с периодической проверкой (интервал — `check_interval_minutes` в конфиге).
 
@@ -34,7 +32,7 @@
 
 ```bash
 pip install -r requirements.txt
-copy config.example.json config.json
+copy Save/config.example.json Save/config.json
 # отредактировать config.json под реальные пути
-python watcher.py
+python AutoSync.pyw
 ```
